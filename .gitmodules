@@ -1,0 +1,3 @@
+[submodule "polarwarp_code"]
+	path = polarwarp_code
+	url = git@github.com:DriftNoise/priima.git
