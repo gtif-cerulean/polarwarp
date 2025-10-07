@@ -1,7 +1,9 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
 metadata:
-  name: polarwarp-gcps
-  namespace: cif
+  generateName: polarwarp-gcps
 spec:
+  entrypoint: execute
   templates:
     - name: execute
       inputs:
@@ -12,8 +14,6 @@ spec:
           - name: lat_max
           - name: date
           - name: num_gcps
-      outputs: {}
-      metadata: {}
       steps:
         - - name: fetch-predictions
             template: fetch-predictions
@@ -56,9 +56,7 @@ spec:
                   from: "{{steps.fetch-s1.outputs.artifacts.s1data}}"
                 - name: model_data
                   from: "{{steps.fetch-predictions.outputs.artifacts.predictions}}"
-        - - name: returnlinks
-            template: returnlinks
-            arguments: {}
+
     - name: fetch-predictions
       inputs:
         parameters:
@@ -67,51 +65,25 @@ spec:
         artifacts:
           - name: predictions
             path: /output
-            s3:
-              endpoint: obs.eu-nl.otc.t-systems.com
-              bucket: gtif-data-cerulean1
-              accessKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: username
-              secretKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: password
-              key: polarwarp/workflows/{{workflow.uid}}/model_data
             archive:
               none: {}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: cce.cloud.com/cce-nodepool
-                    operator: In
-                    values:
-                      - user
-      metadata: {}
       script:
-        name: ""
         image: copernicusmarine/copernicusmarine:2.1.3
-        command:
-          - /bin/bash
-          - -c
+        command: ["/bin/bash", "-c"]
         args:
-          - copernicusmarine login --username xxx --password xxx && mkdir -p
-            /output && copernicusmarine get -nd -o /output --dataset-id
-            cmems_mod_arc_phy_anfc_nextsim_hm --regex
-            '{{inputs.parameters.datestripped}}_hr' --force-download
+          - >
+            copernicusmarine login --username xxx --password xxx &&
+            mkdir -p /output &&
+            copernicusmarine get -nd -o /output
+            --dataset-id cmems_mod_arc_phy_anfc_nextsim_hm
+            --regex '{{inputs.parameters.datestripped}}_hr'
+            --force-download
         env:
           - name: COPERNICUS_USERNAME
             value: xxx
           - name: COPERNICUS_PASSWORD
             value: xxx
-        resources: {}
-        source: ""
-      tolerations:
-        - key: hub.jupyter.org_dedicated
-          operator: Equal
-          value: user
-          effect: NoSchedule
+
     - name: fetch-s1
       inputs:
         parameters:
@@ -124,112 +96,59 @@ spec:
         artifacts:
           - name: s1data
             path: /output
-            s3:
-              endpoint: obs.eu-nl.otc.t-systems.com
-              bucket: gtif-data-cerulean1
-              accessKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: username
-              secretKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: password
-              key: polarwarp/workflows/{{workflow.uid}}/image_data
             archive:
               none: {}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: cce.cloud.com/cce-nodepool
-                    operator: In
-                    values:
-                      - user
-      metadata: {}
       script:
-        name: ""
         image: santilland/destinelab-python3.9-slim:0.0.2
-        command:
-          - python
-          - -c
+        command: ["python", "-c"]
         args:
-          - >-
+          - |-
             import requests 
-
             from pyproj import Transformer
-
             import os 
-
             import destinelab as deauth 
-
             import zipfile 
 
             DESP_USERNAME = 'xxx' 
-
             DESP_PASSWORD = 'xxx' 
-
             auth = deauth.AuthHandler(DESP_USERNAME, DESP_PASSWORD) 
-
             access_token = auth.get_token() 
 
             HDA_API_URL = 'https://hda.data.destination-earth.eu' 
-
             SEARCH_URL = HDA_API_URL + '/stac/search' 
 
-            transformer = Transformer.from_crs("EPSG:3413", "EPSG:4326",
-            always_xy=True)
+            transformer = Transformer.from_crs("EPSG:3413", "EPSG:4326", always_xy=True)
 
-            min_lon, min_lat =
-            transformer.transform({{workflow.parameters.lon_min}},
-            {{workflow.parameters.lat_min}})
-
-            max_lon, max_lat =
-            transformer.transform({{workflow.parameters.lon_max}},
-            {{workflow.parameters.lat_max}})
+            min_lon, min_lat = transformer.transform({{workflow.parameters.lon_min}}, {{workflow.parameters.lat_min}})
+            max_lon, max_lat = transformer.transform({{workflow.parameters.lon_max}}, {{workflow.parameters.lat_max}})
 
             bb = (min_lon, min_lat, max_lon, max_lat)
-
-            SEARCH_QUERY_STRING =
-            '?collections=EO.ESA.DAT.SENTINEL-1.L1_GRD&datetime={{workflow.parameters.date}}T00:00:00Z/{{workflow.parameters.date}}T23:59:59Z&bbox=%s,%s,%s,%s&limit=1'%(bb[0],bb[1],bb[2],bb[3]) 
+            SEARCH_QUERY_STRING = (
+              '?collections=EO.ESA.DAT.SENTINEL-1.L1_GRD'
+              '&datetime={{workflow.parameters.date}}T00:00:00Z/{{workflow.parameters.date}}T23:59:59Z'
+              '&bbox=%s,%s,%s,%s&limit=1' % (bb[0], bb[1], bb[2], bb[3])
+            ) 
 
             print(SEARCH_URL + SEARCH_QUERY_STRING) 
 
-            resp = requests.get(SEARCH_URL + SEARCH_QUERY_STRING,
-            headers={'Authorization': 'Bearer {}'.format(access_token)}) 
-
+            resp = requests.get(SEARCH_URL + SEARCH_QUERY_STRING, headers={'Authorization': f'Bearer {access_token}'}) 
             data = resp.json() 
-
-            # print(data)
 
             if not data['features']:
                 raise Exception('No product found for query')
 
-            # Download the first item
-
             item = data['features'][-1] 
-
-            item_id = item['id'] 
-
             item_url = item['assets']['downloadLink']['href'] 
-
             print(item_url) 
 
-            dataresp = requests.get(item_url, headers={'Authorization': 'Bearer
-            {}'.format(access_token)}) 
-
+            dataresp = requests.get(item_url, headers={'Authorization': f'Bearer {access_token}'}) 
             with open('download.zip', 'wb') as f: 
                 f.write(dataresp.content) 
-            os.makedirs('/output', exist_ok=True) 
 
+            os.makedirs('/output', exist_ok=True) 
             with zipfile.ZipFile('download.zip','r') as zip_ref: 
                 zip_ref.extractall('/output')
-        resources: {}
-        source: ""
-      tolerations:
-        - key: hub.jupyter.org_dedicated
-          operator: Equal
-          value: user
-          effect: NoSchedule
+
     - name: polarwarp
       inputs:
         parameters:
@@ -250,143 +169,44 @@ spec:
         artifacts:
           - name: results
             path: /out_dir
-            s3:
-              endpoint: obs.eu-nl.otc.t-systems.com
-              bucket: gtif-data-cerulean1
-              accessKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: username
-              secretKeySecret:
-                name: gtif-data-cerulean1-bucket
-                key: password
-              key: polarwarp/workflows/{{workflow.uid}}/results
             archive:
               none: {}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: cce.cloud.com/cce-nodepool
-                    operator: In
-                    values:
-                      - user
-      metadata: {}
       script:
-        name: ""
         image: swr.eu-nl.otc.t-systems.com/gtif/polarwarp:0.0.2
-        command:
-          - /bin/sh
-        resources: {}
+        command: ["/bin/sh"]
         securityContext:
           runAsUser: 0
-        source: >
+        source: |
           mkdir -p /out_dir
-
-          find /image_data/ -maxdepth 1 -mindepth 1 -type d | while read folder;
-          do
+          find /image_data/ -maxdepth 1 -mindepth 1 -type d | while read folder; do
               folder_name=$(basename "$folder")
               echo "Processing file: ${folder_name}"
-              gdalwarp -t_srs EPSG:3413 -of GTiff -co COMPRESS=DEFLATE -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} "/image_data/${folder_name}" "/image_data/${folder_name}.tif"
-              python3 priima/image_forecast.py --image "/image_data/${folder_name}.tif" --output-resolution 100 --forecast-duration 6 --data-source NEXTSIM --num-gcps {{workflow.parameters.num_gcps}}
+              gdalwarp -t_srs EPSG:3413 -of GTiff -co COMPRESS=DEFLATE \
+                -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} \
+                "/image_data/${folder_name}" "/image_data/${folder_name}.tif"
+              python3 priima/image_forecast.py \
+                --image "/image_data/${folder_name}.tif" \
+                --output-resolution 100 \
+                --forecast-duration 6 \
+                --data-source NEXTSIM \
+                --num-gcps {{workflow.parameters.num_gcps}}
           done
 
           # Find the folder dynamically we assume one result
-
           DETECTED_FOLDER=$(ls -d /out_dir/*/ | head -n 1) 
-
           echo "Detected folder: $DETECTED_FOLDER"
 
           # Move it to a fixed location for artifact capture
-
           mv "$DETECTED_FOLDER" /out_dir/scene
 
           # Delete all non-TIF files inside the folder
-
           find /out_dir/scene -type f ! -name "*.tif" -delete
 
           # Make sure all files have the same extent
-
           for tiffile in $(find /out_dir/scene -type f -name "*.tif"); do
               echo "Recutting file: ${tiffile}"
-              gdalwarp -t_srs EPSG:3413 -of COG -co COMPRESS=DEFLATE -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} -dstnodata 0 -overwrite "${tiffile}" "/out_dir/scene/tmp.tif"
+              gdalwarp -t_srs EPSG:3413 -of COG -co COMPRESS=DEFLATE \
+                -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} \
+                -dstnodata 0 -overwrite "${tiffile}" "/out_dir/scene/tmp.tif"
               mv "/out_dir/scene/tmp.tif" "${tiffile}"
           done
-      tolerations:
-        - key: hub.jupyter.org_dedicated
-          operator: Equal
-          value: user
-          effect: NoSchedule
-    - name: returnlinks
-      inputs: {}
-      outputs:
-        parameters:
-          - name: json
-            valueFrom:
-              path: /tmp/out.json
-            globalName: urls
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: cce.cloud.com/cce-nodepool
-                    operator: In
-                    values:
-                      - user
-      metadata: {}
-      container:
-        name: ""
-        image: jorop/process-s3-files:v0.0.6
-        command:
-          - sh
-          - -c
-        args:
-          - ./process_s3_files.sh
-        env:
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: gtif-data-cerulean1-bucket
-                key: username
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: gtif-data-cerulean1-bucket
-                key: password
-          - name: AWS_S3_ENDPOINT
-            value: https://obs.eu-nl.otc.t-systems.com
-          - name: AWS_REGION
-            value: eu-nl
-          - name: BUCKET
-            value: gtif-data-cerulean1
-          - name: BPATH
-            value: polarwarp/workflows/{{workflow.uid}}/results/scene
-          - name: ACL
-            value: public-read
-          - name: NUM_FILES
-            value: "7"
-          - name: DEBUG
-            value: "true"
-          - name: PUBLISH_JSON
-            value: "true"
-          - name: PUBLISH_JSON_FILENAME_ENV_VAR
-            value: ARGO_NODE_ID
-          - name: PUBLISH_JSON_FILENAME_REGEX
-            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
-          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
-            value: "2"
-          - name: PUBLISH_JSON_ACL
-            value: public-read
-        resources: {}
-      tolerations:
-        - key: hub.jupyter.org_dedicated
-          operator: Equal
-          value: user
-          effect: NoSchedule
-  entrypoint: execute
-  arguments: {}
-  serviceAccountName: argo-workflow
-  imagePullSecrets:
-    - name: flux-cerulean
-
