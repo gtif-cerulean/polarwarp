@@ -1,9 +1,6 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Workflow
 metadata:
-  generateName: polarwarp-gcps
+  name: polarwarp
 spec:
-  entrypoint: execute
   templates:
     - name: execute
       inputs:
@@ -14,6 +11,8 @@ spec:
           - name: lat_max
           - name: date
           - name: num_gcps
+      outputs: {}
+      metadata: {}
       steps:
         - - name: fetch-predictions
             template: fetch-predictions
@@ -51,39 +50,59 @@ spec:
                   value: "{{inputs.parameters.date}}"
                 - name: num_gcps
                   value: "{{inputs.parameters.num_gcps}}"
-              artifacts:
-                - name: image_data
-                  from: "{{steps.fetch-s1.outputs.artifacts.s1data}}"
-                - name: model_data
-                  from: "{{steps.fetch-predictions.outputs.artifacts.predictions}}"
-
+        - - name: list-results
+            template: list-results
+            arguments: {}
     - name: fetch-predictions
       inputs:
         parameters:
           - name: datestripped
-      outputs:
-        artifacts:
-          - name: predictions
-            path: /output
-            archive:
-              none: {}
+      outputs: {}
+      metadata: {}
       script:
+        name: ""
         image: copernicusmarine/copernicusmarine:2.1.3
-        command: ["/bin/bash", "-c"]
-        args:
-          - >
-            copernicusmarine login --username xxx --password xxx &&
-            mkdir -p /output &&
-            copernicusmarine get -nd -o /output
-            --dataset-id cmems_mod_arc_phy_anfc_nextsim_hm
-            --regex '{{inputs.parameters.datestripped}}_hr'
-            --force-download
+        command:
+          - /bin/bash
+          - -c
         env:
           - name: COPERNICUS_USERNAME
-            value: xxx
+            valueFrom:
+              secretKeyRef:
+                name: cmems
+                key: username
           - name: COPERNICUS_PASSWORD
-            value: xxx
+            valueFrom:
+              secretKeyRef:
+                name: cmems
+                key: password
+        resources: {}
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+        source: |
+          set -e 
 
+          echo "=== Starting Copernicus Marine Data Download ==="
+
+          # Login using environment variables
+          copernicusmarine login \
+            --username "$COPERNICUS_USERNAME" \
+            --password "$COPERNICUS_PASSWORD"
+
+          # Create output directory
+          mkdir -p /work/model_data
+
+          # Download the dataset
+          copernicusmarine get \
+            -nd \
+            -o /work/model_data \
+            --dataset-id cmems_mod_arc_phy_anfc_nextsim_hm \
+            --regex '{{inputs.parameters.datestripped}}_hr' \
+            --force-download
+
+          echo "=== Download Complete ==="
+          ls -lh /work/model_data
     - name: fetch-s1
       inputs:
         parameters:
@@ -92,63 +111,180 @@ spec:
           - name: lon_max
           - name: lat_max
           - name: date
-      outputs:
-        artifacts:
-          - name: s1data
-            path: /output
-            archive:
-              none: {}
+      outputs: {}
+      metadata: {}
       script:
+        name: ""
         image: santilland/destinelab-python3.9-slim:0.0.2
-        command: ["python", "-c"]
-        args:
-          - |-
-            import requests 
-            from pyproj import Transformer
-            import os 
-            import destinelab as deauth 
-            import zipfile 
+        command:
+          - python
+        env:
+          - name: DESP_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: desp
+                key: username
+          - name: DESP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: desp
+                key: password
+        resources:
+          limits:
+            cpu: "2"
+            memory: 8Gi
+          requests:
+            cpu: "1"
+            memory: 4Gi
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+        source: >
+          import requests
 
-            DESP_USERNAME = 'xxx' 
-            DESP_PASSWORD = 'xxx' 
-            auth = deauth.AuthHandler(DESP_USERNAME, DESP_PASSWORD) 
-            access_token = auth.get_token() 
 
-            HDA_API_URL = 'https://hda.data.destination-earth.eu' 
-            SEARCH_URL = HDA_API_URL + '/stac/search' 
+          from pyproj import Transformer
 
-            transformer = Transformer.from_crs("EPSG:3413", "EPSG:4326", always_xy=True)
 
-            min_lon, min_lat = transformer.transform({{workflow.parameters.lon_min}}, {{workflow.parameters.lat_min}})
-            max_lon, max_lat = transformer.transform({{workflow.parameters.lon_max}}, {{workflow.parameters.lat_max}})
+          import os
 
-            bb = (min_lon, min_lat, max_lon, max_lat)
-            SEARCH_QUERY_STRING = (
+
+          import destinelab as deauth
+
+
+          import zipfile
+
+
+
+          print("=== Starting Sentinel-1 Download ===")
+
+
+          DESP_USERNAME = os.environ['DESP_USERNAME']
+
+
+          DESP_PASSWORD = os.environ['DESP_PASSWORD'] 
+
+
+
+          # Authenticate
+
+
+          auth = deauth.AuthHandler(DESP_USERNAME, DESP_PASSWORD)
+
+
+          access_token = auth.get_token()
+
+
+
+          # API endpoints
+
+
+          HDA_API_URL = 'https://hda.data.destination-earth.eu'
+
+
+          SEARCH_URL = HDA_API_URL + '/stac/search'
+
+
+
+          # Transform coordinates from EPSG:3413 to EPSG:4326
+
+
+          transformer = Transformer.from_crs("EPSG:3413", "EPSG:4326",
+
+          always_xy=True)
+
+
+
+          min_lon, min_lat = transformer.transform(
+              {{workflow.parameters.lon_min}},
+              {{workflow.parameters.lat_min}}
+          )
+
+
+          max_lon, max_lat = transformer.transform(
+              {{workflow.parameters.lon_max}},
+              {{workflow.parameters.lat_max}}
+          )
+
+
+
+          bb = (min_lon, min_lat, max_lon, max_lat)
+
+
+
+          # Build search query
+
+
+          SEARCH_QUERY_STRING = (
               '?collections=EO.ESA.DAT.SENTINEL-1.L1_GRD'
               '&datetime={{workflow.parameters.date}}T00:00:00Z/{{workflow.parameters.date}}T23:59:59Z'
               '&bbox=%s,%s,%s,%s&limit=1' % (bb[0], bb[1], bb[2], bb[3])
-            ) 
+          )
 
-            print(SEARCH_URL + SEARCH_QUERY_STRING) 
 
-            resp = requests.get(SEARCH_URL + SEARCH_QUERY_STRING, headers={'Authorization': f'Bearer {access_token}'}) 
-            data = resp.json() 
 
-            if not data['features']:
-                raise Exception('No product found for query')
+          print(f"Search URL: {SEARCH_URL + SEARCH_QUERY_STRING}")
 
-            item = data['features'][-1] 
-            item_url = item['assets']['downloadLink']['href'] 
-            print(item_url) 
 
-            dataresp = requests.get(item_url, headers={'Authorization': f'Bearer {access_token}'}) 
-            with open('download.zip', 'wb') as f: 
-                f.write(dataresp.content) 
 
-            os.makedirs('/output', exist_ok=True) 
-            with zipfile.ZipFile('download.zip','r') as zip_ref: 
-                zip_ref.extractall('/output')
+          # Search for products
 
+
+          resp = requests.get(
+              SEARCH_URL + SEARCH_QUERY_STRING,
+              headers={'Authorization': f'Bearer {access_token}'}
+          )
+
+
+          data = resp.json()
+
+
+
+          if not data['features']:
+              raise Exception('No product found for query')
+
+          # Get the latest item
+
+
+          item = data['features'][-1]
+
+
+          item_url = item['assets']['downloadLink']['href']
+
+
+          print(f"Downloading from: {item_url}")
+
+
+
+          # Download the file
+
+
+          dataresp = requests.get(
+              item_url,
+              headers={'Authorization': f'Bearer {access_token}'}
+          )
+
+
+
+          # Save to shared volume
+
+
+          with open('/work/download.zip', 'wb') as f:
+              f.write(dataresp.content)
+
+          # Extract to shared volume
+
+
+          os.makedirs('/work/image_data', exist_ok=True)
+
+
+          with zipfile.ZipFile('/work/download.zip', 'r') as zip_ref:
+              zip_ref.extractall('/work/image_data')
+
+          print("=== Download Complete ===")
+
+
+          print(f"Files extracted to: /work/image_data")
     - name: polarwarp
       inputs:
         parameters:
@@ -158,55 +294,147 @@ spec:
           - name: lat_max
           - name: date
           - name: num_gcps
-        artifacts:
-          - name: image_data
-            path: /image_data/
-            mode: 511
-          - name: model_data
-            path: /model_data/
-            mode: 511
-      outputs:
-        artifacts:
-          - name: results
-            path: /out_dir
-            archive:
-              none: {}
+      outputs: {}
+      metadata: {}
       script:
+        name: ""
         image: swr.eu-nl.otc.t-systems.com/gtif/polarwarp:0.0.2
-        command: ["/bin/sh"]
+        command:
+          - /bin/sh
+        resources:
+          limits:
+            cpu: "2"
+            memory: 8Gi
+          requests:
+            cpu: "1"
+            memory: 4Gi
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
         securityContext:
           runAsUser: 0
-        source: |
-          mkdir -p /out_dir
-          find /image_data/ -maxdepth 1 -mindepth 1 -type d | while read folder; do
+        source: >
+          set -e  
+
+
+          echo "=== Starting Polarwarp Processing ==="
+
+          ln -sf /work/model_data /model_data
+
+            echo "Model data files:"
+            ls -la /model_data/ || echo "No model data found!"
+
+          # Create output directory
+
+          mkdir -p /work/out_dir
+
+          ln -sf /work/out_dir /out_dir
+
+
+          # Process each Sentinel-1 folder
+
+          find /work/image_data/ -maxdepth 1 -mindepth 1 -type d | while read
+          folder; do
               folder_name=$(basename "$folder")
-              echo "Processing file: ${folder_name}"
-              gdalwarp -t_srs EPSG:3413 -of GTiff -co COMPRESS=DEFLATE \
-                -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} \
-                "/image_data/${folder_name}" "/image_data/${folder_name}.tif"
+              echo "Processing folder: ${folder_name}"
+              
+              # Warp to EPSG:3413 and crop to bounding box
+              gdalwarp \
+                -overwrite \
+                -t_srs EPSG:3413 \
+                -of GTiff \
+                -co COMPRESS=DEFLATE \
+                -te {{inputs.parameters.lon_min}} {{inputs.parameters.lat_min}} {{inputs.parameters.lon_max}} {{inputs.parameters.lat_max}} \
+                "/work/image_data/${folder_name}" \
+                "/work/image_data/${folder_name}.tif"
+              
+              # Run forecast processing
               python3 priima/image_forecast.py \
-                --image "/image_data/${folder_name}.tif" \
+                --image "/work/image_data/${folder_name}.tif" \
                 --output-resolution 100 \
                 --forecast-duration 6 \
                 --data-source NEXTSIM \
                 --num-gcps {{workflow.parameters.num_gcps}}
           done
 
-          # Find the folder dynamically we assume one result
-          DETECTED_FOLDER=$(ls -d /out_dir/*/ | head -n 1) 
-          echo "Detected folder: $DETECTED_FOLDER"
+          # Debug: Check content"
+          ls -la /out_dir/ || echo "No /out_dir found" echo "Contents of
+          /work/out_dir:" ls -la /work/out_dir/ || echo "No /work/out_dir found"
 
-          # Move it to a fixed location for artifact capture
-          mv "$DETECTED_FOLDER" /out_dir/scene
 
-          # Delete all non-TIF files inside the folder
-          find /out_dir/scene -type f ! -name "*.tif" -delete
+          /work/out_dir/*/ 2>/dev/null | head -n 1) echo "Detected output
+          folder: $DETECTED_FOLDER"
 
-          # Make sure all files have the same extent
-          for tiffile in $(find /out_dir/scene -type f -name "*.tif"); do
-              echo "Recutting file: ${tiffile}"
-              gdalwarp -t_srs EPSG:3413 -of COG -co COMPRESS=DEFLATE \
+
+
+          DETECTED_FOLDER=$(ls -d /work/out_dir/*/ | head -n 1)
+
+          echo "Detected output folder: $DETECTED_FOLDER"
+
+
+          # Move to standardized location
+
+          mv "$DETECTED_FOLDER" /work/out_dir/scene
+
+
+          find /work/out_dir/scene -type f ! -name "*.tif" -delete
+
+
+          # Ensure all TIFs have the same extent
+
+          for tiffile in $(find /work/out_dir/scene -type f -name "*.tif"); do
+              echo "Standardizing extent for: ${tiffile}"
+              gdalwarp \
+                -t_srs EPSG:3413 \
+                -of COG \
+                -co COMPRESS=DEFLATE \
                 -te {{workflow.parameters.lon_min}} {{workflow.parameters.lat_min}} {{workflow.parameters.lon_max}} {{workflow.parameters.lat_max}} \
-                -dstnodata 0 -overwrite "${tiffile}" "/out_dir/scene/tmp.tif"
-              mv "/out_dir/scene/tmp.tif" "${tiffile}"
+                -dstnodata 0 \
+                -overwrite \
+                "${tiffile}" \
+                "/work/out_dir/scene/tmp.tif"
+              mv "/work/out_dir/scene/tmp.tif" "${tiffile}"
           done
+
+
+          echo "=== Processing Complete ==="
+
+          ls -lh /work/out_dir/scene/
+    - name: list-results
+      inputs: {}
+      outputs: {}
+      metadata: {}
+      container:
+        name: ""
+        image: alpine:3.19
+        command:
+          - sh
+          - -c
+        args:
+          - |
+            echo '=== Workflow Complete ==='
+            echo ''
+            echo '=== /work directory ==='
+            ls -lh /work
+            echo ''
+            echo '=== Output files (up to 2 levels deep) ==='
+            find /work/out_dir -maxdepth 2 -type f -exec ls -lh {} \;
+        resources: {}
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+  entrypoint: execute
+  arguments: {}
+  serviceAccountName: deside
+  volumeClaimTemplates:
+    - metadata:
+        name: workdir
+        creationTimestamp: null
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: csi-cinder-high-speed-gen2
+      status: {}
